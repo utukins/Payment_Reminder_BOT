@@ -6,6 +6,7 @@ utils.py
 from datetime import datetime, date, timedelta
 from typing import List, Tuple, Optional
 from dateutil.relativedelta import relativedelta
+from decimal import Decimal
 
 
 def format_date(date: datetime.date) -> str:
@@ -21,7 +22,7 @@ def format_date(date: datetime.date) -> str:
     return f"{date.day} {months[date.month]} {date.year}"
 
 
-def format_amount(amount: float) -> str:
+def format_amount(amount: Decimal) -> str:
     """
     Форматировать сумму с разделителями тысяч
     """
@@ -36,7 +37,7 @@ def format_payment_list(payments: List[dict]) -> str:
         return "Нет платежей"
     
     text = ""
-    total = 0
+    total = Decimal('0')
     
     for payment in payments:
         payment_id = payment['id']
@@ -163,15 +164,15 @@ def format_interval(interval_type: str, value: int) -> str:
     return f"{interval_type} {value}"
 
 
-def validate_amount(amount_str: str) -> Optional[float]:
+def validate_amount(amount_str: str) -> Optional[Decimal]:
     """
     Валидация и парсинг суммы
     Добавлена минимальная сумма 1 руб
     """
     try:
-        amount = float(amount_str.replace(',', '.').replace(' ', ''))
-        if amount >= 1:
-            return round(amount, 2)
+        amount = Decimal(amount_str.replace(',', '.').replace(' ', ''))
+        if amount >= Decimal('1'):
+            return amount.quantize(Decimal('0.01'))
         return None
     except ValueError:
         return None
@@ -193,7 +194,7 @@ def generate_payment_summary(payments: List[dict]) -> dict:
     if not payments:
         return {
             'count': 0,
-            'total_amount': 0,
+            'total_amount': Decimal('0'),
             'recurring_count': 0,
             'nearest_date': None
         }
