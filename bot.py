@@ -104,7 +104,15 @@ async def command_start(message: types.Message, state: FSMContext):
 
 @form_router.callback_query(F.data == "add_payment")
 async def start_add_payment(callback: types.CallbackQuery, state: FSMContext):
-    logger.debug(f"Handler start_add_payment triggered with data: {callback.data}")  # Добавлен лог
+    logger.debug(f"Handler start_add_payment triggered with data: {callback.data}")
+    await callback.answer()
+
+    # Удаляем сообщение с кнопками, если оно было
+    data = await state.get_data()
+    if data.get("action_msg_id"):
+        await delete_message(callback.message.chat.id, data["action_msg_id"])
+
+    # Запускаем сценарий добавления
     await state.set_state(AddPayment.name)
     msg = await callback.message.answer(
         "💳 Введите название платежа:",
@@ -113,8 +121,7 @@ async def start_add_payment(callback: types.CallbackQuery, state: FSMContext):
         ])
     )
     await state.update_data(last_bot_msg=msg.message_id)
-    await callback.answer()
-    asyncio.create_task(delete_after_5s(callback.message.chat.id, callback.message.message_id))
+
 
 @form_router.message(AddPayment.name)
 async def payment_name(message: types.Message, state: FSMContext):
@@ -310,8 +317,7 @@ async def payment_repeats(message: types.Message, state: FSMContext):
     
     keyboard = InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text="Добавить ещё", callback_data="add_payment")],
-        [InlineKeyboardButton(text="Меню", callback_data="back_to_menu")],
-        [InlineKeyboardButton(text="Закрыть", callback_data="close")]
+        [InlineKeyboardButton(text="Меню", callback_data="back_to_menu")]
     ])
     final_msg = await message.answer("✅ Повторяющийся платеж добавлен!", reply_markup=keyboard)
     asyncio.create_task(delete_after_5s(message.chat.id, final_msg.message_id))
@@ -348,8 +354,7 @@ async def payment_comment_text(message: types.Message, state: FSMContext):
     
     keyboard = InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text="Добавить ещё", callback_data="add_payment")],
-        [InlineKeyboardButton(text="Меню", callback_data="back_to_menu")],
-        [InlineKeyboardButton(text="Закрыть", callback_data="close")]
+        [InlineKeyboardButton(text="Меню", callback_data="back_to_menu")]
     ])
     final_msg = await message.answer("✅ Платеж добавлен!", reply_markup=keyboard)
     asyncio.create_task(delete_after_5s(message.chat.id, final_msg.message_id))
@@ -361,6 +366,7 @@ async def payment_comment_skip(callback: types.CallbackQuery, state: FSMContext)
     data = await state.get_data()
     await delete_message(callback.message.chat.id, data.get('last_bot_msg'))
     await state.update_data(payment_comment=None)
+
     # Сохранение однократного
     payment_id = db.add_payment(
         user_id=callback.from_user.id,
@@ -372,15 +378,23 @@ async def payment_comment_skip(callback: types.CallbackQuery, state: FSMContext)
         is_recurring=False
     )
     await notify_admin(callback.from_user, data, recurring=False)
-    
+
+    # 1️⃣ Информационное сообщение (удалится через 5 секунд)
+    info_msg = await callback.message.answer("✅ Платеж добавлен!")
+    asyncio.create_task(delete_after_5s(info_msg.chat.id, info_msg.message_id))
+
+    # 2️⃣ Отдельное сообщение с кнопками (останется)
     keyboard = InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="Добавить ещё", callback_data="add_payment")],
-        [InlineKeyboardButton(text="Меню", callback_data="back_to_menu")],
-        [InlineKeyboardButton(text="Закрыть", callback_data="close")]
+        [InlineKeyboardButton(text="➕ Добавить ещё", callback_data="add_payment")],
+        [InlineKeyboardButton(text="📋 Меню", callback_data="back_to_menu")]
     ])
-    final_msg = await callback.message.answer("✅ Платеж добавлен!", reply_markup=keyboard)
-    asyncio.create_task(delete_after_5s(callback.message.chat.id, final_msg.message_id))
+    action_msg = await callback.message.answer("Что дальше?:", reply_markup=keyboard)
+
+    # Сохраняем ID сообщения с кнопками, чтобы потом удалить при нажатии
+    await state.update_data(action_msg_id=action_msg.message_id)
+
     await state.clear()
+
 
 # ====================== НАЗАД / ОТМЕНА ======================
 
@@ -420,7 +434,6 @@ async def show_chat_payments(callback: types.CallbackQuery, state: FSMContext):
         for p in payments
     ]
     keyboard_rows.append([InlineKeyboardButton(text="Меню", callback_data="back_to_menu")])
-    keyboard_rows.append([InlineKeyboardButton(text="Закрыть", callback_data="close")])
 
     keyboard = InlineKeyboardMarkup(inline_keyboard=keyboard_rows)
     msg = await callback.message.answer("📋 Выберите платеж:", reply_markup=keyboard)
@@ -471,17 +484,32 @@ async def mark_payment_done(callback: types.CallbackQuery, state: FSMContext):
     await callback.answer()
     payment_id = int(callback.data.split(":")[1])
     db.complete_payment(payment_id)
+
+    # Удаляем сообщение с деталями
+    await callback.message.delete()
+
+    # Информационное сообщение
     msg = await callback.message.answer("✅ Платеж отмечен как выполненный.")
     asyncio.create_task(delete_after_5s(msg.chat.id, msg.message_id))
 
+    # Автоматический переход в список платежей
+    await show_chat_payments(callback, state)
 
 @form_router.callback_query(F.data.startswith("payment_delete:"))
 async def delete_payment(callback: types.CallbackQuery, state: FSMContext):
     await callback.answer()
     payment_id = int(callback.data.split(":")[1])
     db.delete_payment(payment_id)
+
+    # Удаляем сообщение с деталями
+    await callback.message.delete()
+
+    # Информационное сообщение
     msg = await callback.message.answer("🗑 Платеж удалён.")
     asyncio.create_task(delete_after_5s(msg.chat.id, msg.message_id))
+
+    # Автоматический переход в список платежей
+    await show_chat_payments(callback, state)
 
 # ====================== РЕДАКТИРОВАНИЕ ПЛАТЕЖА (ЦИКЛ) ======================
 
@@ -802,18 +830,28 @@ async def finish_edit(callback: types.CallbackQuery, state: FSMContext):
     await state.clear()
 
 
-# ====================== НЕДОСТАЮЩИЕ HANDLERS ======================
+# ====================== ВОЗВРАТ В ГЛАВНОЕ МЕНЮ ======================
 
 @form_router.callback_query(F.data == "back_to_menu")
 async def handle_back_to_menu(callback: types.CallbackQuery, state: FSMContext):
     await callback.answer()
     data = await state.get_data()
+
+    # Удаляем сообщение со списком платежей, если оно было
     if 'list_msg_id' in data:
         await delete_message(callback.message.chat.id, data['list_msg_id'])
+
+    # Удаляем сообщение с кнопками "Добавить ещё / Меню", если оно было
+    if 'action_msg_id' in data:
+        await delete_message(callback.message.chat.id, data['action_msg_id'])
+
+    # Переход в меню
     await back_to_menu(callback.message)
+
+    # Очистка состояния
     await state.clear()
 
-@form_router.callback_query(F.data == "close")
+@form_router.callback_query(F.data == "close") 
 async def handle_close(callback: types.CallbackQuery, state: FSMContext):
     await callback.answer()
     try:
@@ -822,7 +860,7 @@ async def handle_close(callback: types.CallbackQuery, state: FSMContext):
         pass
     await back_to_menu(callback.message)  # Добавлено по требованию
     await state.clear()
-
+# ==================== HELP =========================================
 @form_router.callback_query(F.data == "help")
 async def show_help(callback: types.CallbackQuery, state: FSMContext):
     await callback.answer()
