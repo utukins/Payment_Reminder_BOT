@@ -8,15 +8,15 @@ from datetime import datetime, timedelta
 from typing import List, Tuple, Optional
 from decimal import Decimal
 
-from sqlalchemy import create_engine, select, Column, Integer, String, Float, Text, Boolean, ForeignKey, Date, func, text
-from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, relationship, Session
+from sqlalchemy import create_engine, select, Column, Integer, String, Text, Boolean, ForeignKey, Date, func, text, Index
+from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, Session
 from sqlalchemy.exc import SQLAlchemyError, OperationalError
-from sqlalchemy.engine import Engine
+from sqlalchemy.types import DECIMAL  # Для Decimal типа
 
 from dateutil.relativedelta import relativedelta
 
 from config import DATABASE_NAME  # Добавлен импорт
-from utils import get_next_occurrence
+from utils import get_next_occurrence  # Импорт для complete_payment
 
 logger = logging.getLogger(__name__)
 
@@ -34,7 +34,7 @@ class Payment(Base):
     user_id: Mapped[int]
     chat_id: Mapped[int]
     date: Mapped[datetime.date] = mapped_column(Date)
-    amount: Mapped[float] = mapped_column(Float)
+    amount: Mapped[Decimal] = mapped_column(DECIMAL(10, 2))  # Изменено на Decimal
     comment: Mapped[Optional[str]] = mapped_column(Text)
     status: Mapped[str] = mapped_column(String(50), default='active')
     is_recurring: Mapped[bool] = mapped_column(Boolean, default=False)
@@ -42,6 +42,10 @@ class Payment(Base):
     interval_value: Mapped[Optional[int]] = mapped_column(Integer)
     repeat_count: Mapped[Optional[int]] = mapped_column(Integer)
     created_at: Mapped[datetime] = mapped_column(default=datetime.now)
+
+    __table_args__ = (
+        Index('idx_payments_user_chat_date', 'user_id', 'chat_id', 'date'),  # Добавлен индекс
+    )
 
 class Log(Base):
     __tablename__ = "logs"
@@ -69,7 +73,7 @@ class Database:
             try:
                 # Проверка наличия колонок в payments
                 result = conn.execute(text("PRAGMA table_info(payments)"))
-                columns = [row[1] for row in result]
+                columns = {row[1]: row[2] for row in result}  # {name: type}
                 
                 if 'chat_id' not in columns:
                     conn.execute(text("ALTER TABLE payments ADD COLUMN chat_id INTEGER"))
@@ -91,6 +95,11 @@ class Database:
                     conn.execute(text("ALTER TABLE payments ADD COLUMN is_recurring BOOLEAN DEFAULT 0"))
                     logger.info("Добавлена колонка is_recurring в таблицу payments")
                 
+                # Проверка типа amount (улучшено для Decimal)
+                if 'amount' in columns and columns['amount'].upper() != 'DECIMAL':
+                    logger.warning("Колонка amount имеет тип FLOAT вместо DECIMAL. Рекомендуется сбросить БД для изменения типа.")
+                    # В SQLite нельзя изменить тип без пересоздания таблицы, так что только warning
+                
                 conn.commit()
             except OperationalError as e:
                 logger.error(f"Ошибка миграции: {e}")
@@ -104,7 +113,7 @@ class Database:
         chat_id: int,
         name: str,
         date: datetime.date,
-        amount: float,
+        amount: Decimal,  # Изменено на Decimal
         comment: Optional[str] = None,
         is_recurring: bool = False,
         interval_type: Optional[str] = None,
@@ -301,7 +310,7 @@ class Database:
             total = session.query(func.count(Payment.id)).filter(Payment.user_id == user_id, Payment.chat_id == chat_id).scalar()
             active = session.query(func.count(Payment.id)).filter(Payment.user_id == user_id, Payment.chat_id == chat_id, Payment.status == 'active').scalar()
             completed = session.query(func.count(Payment.id)).filter(Payment.user_id == user_id, Payment.chat_id == chat_id, Payment.status == 'completed').scalar()
-            total_amount = session.query(func.sum(Payment.amount)).filter(Payment.user_id == user_id, Payment.chat_id == chat_id, Payment.status == 'active').scalar() or 0
+            total_amount = session.query(func.sum(Payment.amount)).filter(Payment.user_id == user_id, Payment.chat_id == chat_id, Payment.status == 'active').scalar() or Decimal('0')
             
             return {
                 'total': total,
