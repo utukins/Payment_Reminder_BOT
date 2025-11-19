@@ -16,6 +16,7 @@ from sqlalchemy.engine import Engine
 from dateutil.relativedelta import relativedelta
 
 from config import DATABASE_NAME  # Добавлен импорт
+from utils import get_next_occurrence
 
 logger = logging.getLogger(__name__)
 
